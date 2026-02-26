@@ -8,21 +8,22 @@ import urllib3
 # Desabilitar avisos de segurança
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Xtream API Ultra Fix", layout="centered")
+st.set_page_config(page_title="Xtream API Fix 406", layout="centered")
 
-# User-Agent idêntico ao aplicativo Smarters Pro original
+# HEADERS REFORÇADOS PARA EVITAR ERRO 406
+# Simulando exatamente um app mobile para enganar o firewall
 HEADERS = {
-    "User-Agent": "IPTVSmartersPlayer",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
     "Accept-Encoding": "gzip, deflate",
-    "Accept": "*/*",
-    "Connection": "keep-alive"
+    "Connection": "keep-alive",
+    "X-Requested-With": "com.nst.iptvsmartersptvbox"
 }
 
 def parse_urls(message):
-    # Regex robusto para pegar a URL completa com parâmetros
     pattern = r"(https?://[^\s\"']+\?[^\s\"']+)"
     found_urls = re.findall(pattern, message)
-    
     results = []
     for url in found_urls:
         try:
@@ -30,13 +31,9 @@ def parse_urls(message):
             params = parse_qs(p.query)
             user = params.get('username', [None])[0]
             pwd = params.get('password', [None])[0]
-            
             if user and pwd:
-                # Remove o arquivo (get.php) e mantém apenas a base do servidor
-                path = p.path.lower()
-                clean_path = path.replace('get.php', '').replace('player_api.php', '')
+                clean_path = p.path.lower().replace('get.php', '').replace('player_api.php', '')
                 if clean_path.endswith('/'): clean_path = clean_path[:-1]
-                
                 base_url = f"{p.scheme}://{p.netloc}{clean_path}"
                 results.append({"base": base_url, "user": user, "pwd": pwd})
         except: continue
@@ -44,81 +41,66 @@ def parse_urls(message):
 
 def test_server(data):
     base, user, pwd = data["base"], data["user"], data["pwd"]
-    # Endpoint oficial de login do Xtream Codes
+    # Forçamos o uso do player_api.php
     api_url = f"{base}/player_api.php?username={quote(user)}&password={quote(pwd)}"
     
-    result = {"success": False, "msg": "Offline", "data": None, "debug": ""}
+    result = {"success": False, "msg": "Offline", "data": None}
     
     try:
-        # allow_redirects=True é vital para CDNs
-        response = requests.get(api_url, headers=HEADERS, verify=False, timeout=15, allow_redirects=True)
+        # Criamos uma sessão para manter cookies se necessário
+        session = requests.Session()
+        response = session.get(api_url, headers=HEADERS, verify=False, timeout=20)
         
         if response.status_code == 200:
             try:
                 json_data = response.json()
-                if "user_info" in json_data:
-                    auth = json_data.get("user_info", {}).get("auth")
-                    if auth == 1:
-                        result["success"] = True
-                        result["data"] = json_data
-                    else:
-                        result["msg"] = "Usuário ou Senha Inválidos"
+                if "user_info" in json_data and json_data.get("user_info", {}).get("auth") == 1:
+                    result["success"] = True
+                    result["data"] = json_data
                 else:
-                    result["msg"] = "Servidor não é Xtream API"
+                    result["msg"] = "Credenciais Inválidas ou Conta Vencida"
             except:
-                result["msg"] = "Resposta não é JSON"
-                result["debug"] = response.text[:100] # Pega o início da resposta para ver se é erro de firewall
+                result["msg"] = "O servidor respondeu, mas não é um formato Xtream válido."
         else:
-            result["msg"] = f"Erro HTTP: {response.status_code}"
+            result["msg"] = f"Erro HTTP {response.status_code} (Bloqueio de Segurança)"
             
-    except requests.exceptions.Timeout:
-        result["msg"] = "Tempo esgotado (Timeout)"
-    except requests.exceptions.ConnectionError:
-        result["msg"] = "Servidor Offline ou URL Incorreta"
     except Exception as e:
-        result["msg"] = f"Erro: {str(e)}"
+        result["msg"] = f"Erro de Conexão: {str(e)}"
         
     return result
 
-# --- Interface ---
-st.title("🔌 Testador Xtream API (Resgate)")
+# --- INTERFACE ---
+st.title("🔌 Corretor Xtream (Anti-Block 406)")
 
-txt = st.text_area("Cole seu link M3U:", placeholder="http://dominio.com/get.php?username=...")
+url_input = st.text_area("Cole seu link M3U aqui:", placeholder="http://cdn.club8.ca/get.php?username=...")
 
-if st.button("🚀 Iniciar Teste"):
-    links = parse_urls(txt)
+if st.button("🚀 Forçar Conexão"):
+    links = parse_urls(url_input)
     
     if not links:
-        st.error("Nenhuma credencial encontrada na URL.")
+        st.error("Nenhuma URL detectada.")
     else:
         for link in links:
-            with st.status(f"Conectando a {link['base']}...", expanded=True) as status:
+            with st.spinner(f"Tentando burlar firewall de {link['base']}..."):
                 res = test_server(link)
                 
                 if res["success"]:
-                    status.update(label="✅ Conectado!", state="complete")
                     ui = res["data"]["user_info"]
-                    
                     with st.container(border=True):
-                        st.success(f"**Login realizado com sucesso!**")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"👤 **User:** `{link['user']}`")
-                            st.write(f"🔑 **Pass:** `{link['pwd']}`")
-                            
+                        st.balloons()
+                        st.success("✅ Conexão Estabelecida!")
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.write(f"👤 **Usuário:** `{link['user']}`")
                             exp = ui.get("exp_date")
-                            if exp:
-                                date = datetime.fromtimestamp(int(exp)).strftime('%d/%m/%Y') if int(exp) > 0 else "Ilimitado"
-                                st.write(f"📅 **Expira:** `{date}`")
-                        
-                        with col2:
+                            date = datetime.fromtimestamp(int(exp)).strftime('%d/%m/%Y') if (exp and int(exp) > 0) else "Ilimitado"
+                            st.write(f"📅 **Expira:** `{date}`")
+                        with c2:
                             st.write(f"👥 **Conexões:** `{ui.get('active_cons')}/{ui.get('max_connections')}`")
-                            st.write(f"📍 **Status:** `{ui.get('status')}`")
+                            st.write(f"📡 **Status:** `{ui.get('status')}`")
                 else:
-                    status.update(label=f"❌ Falha: {res['msg']}", state="error")
-                    st.error(f"Erro no servidor: {res['msg']}")
-                    if res["debug"]:
-                        st.info(f"Resposta do servidor: {res['debug']}")
+                    st.error(f"Falha: {res['msg']}")
+                    st.info("O servidor cdn.club8.ca é rígido. Se o erro 406 persistir, o servidor exige que a conexão venha de um IP de dispositivo físico, não de um servidor de hospedagem.")
 
 st.divider()
-st.caption("Dica: Se persistir o erro, tente usar a URL sem o 'cdn.' no início, caso o servidor tenha um endereço alternativo.")
+st.caption("Nota: Se o erro 406 continuar, tente trocar 'http' por 'https' manualmente na URL colada.")
