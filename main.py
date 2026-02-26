@@ -3,148 +3,122 @@ import re
 import requests
 from urllib.parse import quote, urlparse, parse_qs
 from datetime import datetime
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import unicodedata
 import urllib3
 
 # Desabilitar avisos de segurança
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Xtream API Fix", layout="centered")
+st.set_page_config(page_title="Xtream API Ultra Fix", layout="centered")
 
-# HEADERS SIMULANDO SMARTERS PRO (Evita bloqueio de servidor)
+# User-Agent idêntico ao aplicativo Smarters Pro original
 HEADERS = {
     "User-Agent": "IPTVSmartersPlayer",
+    "Accept-Encoding": "gzip, deflate",
     "Accept": "*/*",
     "Connection": "keep-alive"
 }
 
-def normalize_text(text):
-    if not isinstance(text, str): return ""
-    return unicodedata.normalize('NFKD', text.lower()).encode('ascii', 'ignore').decode('utf-8')
-
 def parse_urls(message):
-    # Regex para capturar URLs que contenham username e password
+    # Regex robusto para pegar a URL completa com parâmetros
     pattern = r"(https?://[^\s\"']+\?[^\s\"']+)"
     found_urls = re.findall(pattern, message)
     
-    parsed_results = []
-    unique_ids = set()
-
+    results = []
     for url in found_urls:
         try:
-            parsed_url = urlparse(url)
-            params = parse_qs(parsed_url.query)
-            
+            p = urlparse(url)
+            params = parse_qs(p.query)
             user = params.get('username', [None])[0]
             pwd = params.get('password', [None])[0]
             
             if user and pwd:
-                # Extrai a base sem o arquivo (get.php ou player_api.php)
-                base_path = parsed_url.path
-                clean_path = base_path.replace('get.php', '').replace('player_api.php', '')
+                # Remove o arquivo (get.php) e mantém apenas a base do servidor
+                path = p.path.lower()
+                clean_path = path.replace('get.php', '').replace('player_api.php', '')
                 if clean_path.endswith('/'): clean_path = clean_path[:-1]
                 
-                # Monta a base correta: http://dominio.com:porta
-                base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{clean_path}"
-                display_base = f"{parsed_url.scheme}://{parsed_url.hostname}"
-                
-                identifier = (base_url, user, pwd)
-                if identifier not in unique_ids:
-                    unique_ids.add(identifier)
-                    parsed_results.append({
-                        "base": base_url,
-                        "display_base": display_base,
-                        "username": user,
-                        "password": pwd
-                    })
+                base_url = f"{p.scheme}://{p.netloc}{clean_path}"
+                results.append({"base": base_url, "user": user, "pwd": pwd})
         except: continue
-    return parsed_results
+    return results
 
-def get_xtream_info(url_data, search_name=None):
-    base, user, pwd = url_data["base"], url_data["username"], url_data["password"]
-    
-    # Montagem da URL de API
+def test_server(data):
+    base, user, pwd = data["base"], data["user"], data["pwd"]
+    # Endpoint oficial de login do Xtream Codes
     api_url = f"{base}/player_api.php?username={quote(user)}&password={quote(pwd)}"
     
-    res = {
-        "is_json": False, "exp_date": "Falha no login",
-        "active_cons": "N/A", "max_connections": "N/A", "has_adult_content": False,
-        "is_accepted_domain": False, "live_count": 0, "vod_count": 0, "series_count": 0,
-        "search_matches": {"Canais": [], "Filmes": [], "Séries": {}}
-    }
-
+    result = {"success": False, "msg": "Offline", "data": None, "debug": ""}
+    
     try:
-        # Request principal com timeout maior
-        response = requests.get(api_url, headers=HEADERS, verify=False, timeout=20)
+        # allow_redirects=True é vital para CDNs
+        response = requests.get(api_url, headers=HEADERS, verify=False, timeout=15, allow_redirects=True)
         
-        # Se o servidor retornar 200 OK mas não for JSON, ele pode estar bloqueando o User-Agent
-        data_json = response.json()
-
-        # Xtream Codes retorna "user_info" em caso de sucesso
-        if "user_info" in data_json:
-            u_info = data_json.get("user_info", {})
+        if response.status_code == 200:
+            try:
+                json_data = response.json()
+                if "user_info" in json_data:
+                    auth = json_data.get("user_info", {}).get("auth")
+                    if auth == 1:
+                        result["success"] = True
+                        result["data"] = json_data
+                    else:
+                        result["msg"] = "Usuário ou Senha Inválidos"
+                else:
+                    result["msg"] = "Servidor não é Xtream API"
+            except:
+                result["msg"] = "Resposta não é JSON"
+                result["debug"] = response.text[:100] # Pega o início da resposta para ver se é erro de firewall
+        else:
+            result["msg"] = f"Erro HTTP: {response.status_code}"
             
-            # Se auth for 0, as credenciais estão erradas ou expiradas
-            if u_info.get("auth") == 0:
-                res["exp_date"] = "Credenciais Inválidas"
-                return url_data, res
-
-            res["is_json"] = True
-            
-            # Tratamento de expiração
-            exp = u_info.get("exp_date")
-            if exp and str(exp).isdigit():
-                ts = int(exp)
-                if ts == 0: res["exp_date"] = "Ilimitado"
-                elif ts > 2147483647: res["exp_date"] = "Vitalício"
-                else: res["exp_date"] = datetime.fromtimestamp(ts).strftime('%d/%m/%Y')
-            
-            res["active_cons"] = u_info.get("active_cons", "0")
-            res["max_connections"] = u_info.get("max_connections", "0")
-            
-            # Verificação de domínios aceitos
-            valid_tlds = ('.ca', '.io', '.cc', '.me', '.in', '.top', '.space')
-            res["is_accepted_domain"] = any(url_data["display_base"].lower().endswith(tld) for tld in valid_tlds)
-
-            # Contagem de conteúdos (Opcional para velocidade)
-            actions = {"live": "get_live_streams", "vod": "get_vod_streams", "series": "get_series"}
-            for key, act in actions.items():
-                try:
-                    r = requests.get(f"{api_url}&action={act}", headers=HEADERS, verify=False, timeout=15)
-                    items = r.json()
-                    if isinstance(items, list):
-                        res[f"{key}_count"] = len(items)
-                except: pass
+    except requests.exceptions.Timeout:
+        result["msg"] = "Tempo esgotado (Timeout)"
+    except requests.exceptions.ConnectionError:
+        result["msg"] = "Servidor Offline ou URL Incorreta"
     except Exception as e:
-        res["exp_date"] = f"Erro: Offline"
+        result["msg"] = f"Erro: {str(e)}"
         
-    return url_data, res
+    return result
 
-# --- Interface Streamlit ---
-st.title("🔌 Corretor Xtream API")
+# --- Interface ---
+st.title("🔌 Testador Xtream API (Resgate)")
 
-m3u_input = st.text_area("Cole a URL completa aqui:", height=100)
-search_query = st.text_input("🔍 Buscar canal/filme (opcional):")
+txt = st.text_area("Cole seu link M3U:", placeholder="http://dominio.com/get.php?username=...")
 
-if st.button("🚀 Testar"):
-    parsed = parse_urls(m3u_input)
-    if not parsed:
-        st.warning("Formato de URL não reconhecido. Certifique-se que tem 'username=' e 'password='.")
+if st.button("🚀 Iniciar Teste"):
+    links = parse_urls(txt)
+    
+    if not links:
+        st.error("Nenhuma credencial encontrada na URL.")
     else:
-        for item in parsed:
-            with st.spinner(f"Conectando a {item['display_base']}..."):
-                orig, info = get_xtream_info(item, search_query)
+        for link in links:
+            with st.status(f"Conectando a {link['base']}...", expanded=True) as status:
+                res = test_server(link)
                 
-                with st.container(border=True):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown(f"**Servidor:** `{orig['display_base']}`")
-                        st.markdown(f"**Status:** {'✅ Logado' if info['is_json'] else '❌ Erro'}")
-                        color = "green" if info['is_json'] else "red"
-                        st.markdown(f"**Expiração:** :{color}[{info['exp_date']}]")
-                    with c2:
-                        st.write(f"📺 Canais: `{info['live_count']}`")
-                        st.write(f"👥 Conexões: `{info['active_cons']}/{info['max_connections']}`")
-                        st.write(f"🌐 Domínio OK: {'✅' if info['is_accepted_domain'] else '❌'}")
+                if res["success"]:
+                    status.update(label="✅ Conectado!", state="complete")
+                    ui = res["data"]["user_info"]
+                    
+                    with st.container(border=True):
+                        st.success(f"**Login realizado com sucesso!**")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"👤 **User:** `{link['user']}`")
+                            st.write(f"🔑 **Pass:** `{link['pwd']}`")
+                            
+                            exp = ui.get("exp_date")
+                            if exp:
+                                date = datetime.fromtimestamp(int(exp)).strftime('%d/%m/%Y') if int(exp) > 0 else "Ilimitado"
+                                st.write(f"📅 **Expira:** `{date}`")
+                        
+                        with col2:
+                            st.write(f"👥 **Conexões:** `{ui.get('active_cons')}/{ui.get('max_connections')}`")
+                            st.write(f"📍 **Status:** `{ui.get('status')}`")
+                else:
+                    status.update(label=f"❌ Falha: {res['msg']}", state="error")
+                    st.error(f"Erro no servidor: {res['msg']}")
+                    if res["debug"]:
+                        st.info(f"Resposta do servidor: {res['debug']}")
+
+st.divider()
+st.caption("Dica: Se persistir o erro, tente usar a URL sem o 'cdn.' no início, caso o servidor tenha um endereço alternativo.")
