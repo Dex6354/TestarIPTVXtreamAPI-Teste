@@ -1,20 +1,19 @@
 import streamlit as st
 import re
 import requests
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, parse_qs
 from datetime import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import unicodedata
 import urllib3
 
-# Desabilitar avisos de segurança para certificados SSL inválidos (comum em IPTV)
+# Desabilitar avisos de segurança para certificados SSL inválidos
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuração da página do Streamlit
 st.set_page_config(page_title="Testar Xtream API", layout="centered")
 
-# Cabeçalhos para simular um navegador (Evita bloqueio do servidor)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "*/*",
@@ -33,8 +32,8 @@ st.markdown("""
 st.markdown("""
     <h5 style='margin-bottom: 0.1rem;'>🔌 Testar Xtream API</h5>
     <p style='margin-top: 0.1rem;'>
-        ✅ <strong>Domínios aceitos no Smarters Pro:</strong> <code>.ca</code>, <code>.io</code>, <code>.cc</code>, <code>.me</code>, <code>.top</code>, <code>.space</code>, <code>.in</code>.<br>
-        ❌ <strong>Domínios não aceitos:</strong> <code>.site</code>, <code>.com</code>, <code>.lat</code>, <code>.live</code>, <code>.icu</code>, <code>.xyz</code>, <code>.online</code>.
+        ✅ <strong>Domínios aceitos no Smarters Pro:</strong> .ca, .io, .cc, .me, .top, .space, .in.<br>
+        ❌ <strong>Domínios não aceitos:</strong> .site, .com, .lat, .live, .icu, .xyz, .online.
     </p>
 """, unsafe_allow_html=True)
 
@@ -53,32 +52,42 @@ def normalize_text(text):
     return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8')
 
 def parse_urls(message):
-    m3u_pattern = r"(https?://[^\s\"']+(?:get\.php|player_api\.php)\?username=([a-zA-Z0-9]+)&password=([a-zA-Z0-9]+))"
-    found = re.findall(m3u_pattern, message)
-    parsed_urls = []
+    """
+    Extrai credenciais de URLs M3U ou links Xtream.
+    """
+    # Regex melhorado para capturar a base e os parâmetros de query
+    pattern = r"(https?://[^\s\"']+\?[^\s\"']+)"
+    found_urls = re.findall(pattern, message)
+    
+    parsed_results = []
     unique_ids = set()
 
-    for item in found:
-        full_url, user, pwd = item
-        base_match = re.search(r"(https?://[^/]+(?::\d+)?)", full_url)
-        if base_match:
-            base_full = base_match.group(1)
-            if base_full.endswith('/'): base_full = base_full[:-1]
+    for url in found_urls:
+        try:
+            parsed_url = urlparse(url)
+            params = parse_qs(parsed_url.query)
             
-            # Extrai apenas o hostname (ex: pro123.ddns.me)
-            parsed_url = urlparse(base_full)
-            base_display = f"{parsed_url.scheme}://{parsed_url.hostname}"
+            user = params.get('username', [None])[0]
+            pwd = params.get('password', [None])[0]
             
-            identifier = (base_full, user, pwd)
-            if identifier not in unique_ids:
-                unique_ids.add(identifier)
-                parsed_urls.append({
-                    "base": base_full, 
-                    "display_base": base_display, 
-                    "username": user, 
-                    "password": pwd
-                })
-    return parsed_urls
+            if user and pwd:
+                # Reconstrói a base: scheme://domain:port
+                base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                display_base = f"{parsed_url.scheme}://{parsed_url.hostname}"
+                
+                identifier = (base_url, user, pwd)
+                if identifier not in unique_ids:
+                    unique_ids.add(identifier)
+                    parsed_results.append({
+                        "base": base_url,
+                        "display_base": display_base,
+                        "username": user,
+                        "password": pwd
+                    })
+        except Exception:
+            continue
+            
+    return parsed_results
 
 def get_series_details(base_url, username, password, series_id):
     try:
@@ -97,6 +106,8 @@ def get_xtream_info(url_data, search_name=None):
     base, user, pwd = url_data["base"], url_data["username"], url_data["password"]
     display_base = url_data["display_base"]
     u_enc, p_enc = quote(user), quote(pwd)
+    
+    # Tentativa via player_api (padrão Xtream)
     api_url = f"{base}/player_api.php?username={u_enc}&password={p_enc}"
     
     res = {
@@ -110,80 +121,75 @@ def get_xtream_info(url_data, search_name=None):
 
     try:
         main_resp = requests.get(api_url, headers=HEADERS, verify=False, timeout=15)
-        try:
-            data_json = main_resp.json()
-        except:
-            return url_data, res
+        data_json = main_resp.json()
 
-        if "user_info" not in data_json: 
-            return url_data, res
-        
-        res["is_json"] = True
-        user_info = data_json.get("user_info", {})
-        exp = user_info.get("exp_date")
-        if exp and str(exp).isdigit():
-            if int(exp) == 0:
-                res["exp_date"] = "Ilimitado"
+        # Verifica se o login foi aceito (Xtream retorna user_info no sucesso)
+        if "user_info" in data_json and data_json.get("user_info", {}).get("auth") != 0:
+            res["is_json"] = True
+            user_info = data_json.get("user_info", {})
+            
+            # Formatação de Data
+            exp = user_info.get("exp_date")
+            if exp and str(exp).isdigit():
+                ts = int(exp)
+                if ts == 0: res["exp_date"] = "Ilimitado"
+                elif ts > 2147483647: res["exp_date"] = "Nunca expira"
+                else: res["exp_date"] = datetime.fromtimestamp(ts).strftime('%d/%m/%Y')
             else:
-                res["exp_date"] = "Nunca expira" if int(exp) > time.time() * 200 else datetime.fromtimestamp(int(exp)).strftime('%d/%m/%Y')
-        else:
-             res["exp_date"] = "Indefinido"
-        
-        res["active_cons"] = user_info.get("active_cons", "0")
-        res["max_connections"] = user_info.get("max_connections", "0")
-        
-        # Lógica de validação do domínio baseada no display_base (sem porta)
-        valid_tlds = ('.ca', '.io', '.cc', '.me', '.in', '.top', '.space')
-        clean_domain = display_base.lower()
-        res["is_accepted_domain"] = any(clean_domain.endswith(tld) for tld in valid_tlds)
+                res["exp_date"] = "Indefinido"
 
-        try:
-            cat_resp = requests.get(f"{api_url}&action=get_live_categories", headers=HEADERS, verify=False, timeout=10).json()
-            if isinstance(cat_resp, list):
-                for cat in cat_resp:
-                    cat_name = normalize_text(cat.get("category_name", ""))
-                    if any(key in cat_name for key in adult_keys):
-                        res["has_adult_content"] = True
-                        break
-        except: pass
+            res["active_cons"] = user_info.get("active_cons", "0")
+            res["max_connections"] = user_info.get("max_connections", "0")
 
-        actions = {"live": "get_live_streams", "vod": "get_vod_streams", "series": "get_series"}
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            future_to_key = {
-                executor.submit(requests.get, f"{api_url}&action={act}", headers=HEADERS, verify=False, timeout=20): key 
-                for key, act in actions.items()
-            }
-            for future in as_completed(future_to_key):
-                key = future_to_key[future]
-                try:
-                    resp_content = future.result().json()
-                    if isinstance(resp_content, list):
-                        res[f"{key}_count"] = len(resp_content)
-                        if not res["has_adult_content"] and key == "live":
-                            for item in resp_content[:100]:
-                                if any(key in normalize_text(item.get("name", "")) for key in adult_keys):
-                                    res["has_adult_content"] = True
-                                    break
-                        if search_name:
-                            s_norm = normalize_text(search_name)
-                            if key == "series":
+            # Validação de Domínio
+            valid_tlds = ('.ca', '.io', '.cc', '.me', '.in', '.top', '.space')
+            res["is_accepted_domain"] = any(display_base.lower().endswith(tld) for tld in valid_tlds)
+
+            # Busca de Conteúdo
+            actions = {"live": "get_live_streams", "vod": "get_vod_streams", "series": "get_series"}
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                future_to_key = {
+                    executor.submit(requests.get, f"{api_url}&action={act}", headers=HEADERS, verify=False, timeout=20): key 
+                    for key, act in actions.items()
+                }
+                for future in as_completed(future_to_key):
+                    key = future_to_key[future]
+                    try:
+                        resp_content = future.result().json()
+                        if isinstance(resp_content, list):
+                            res[f"{key}_count"] = len(resp_content)
+                            
+                            # Checar conteúdo adulto nos primeiros itens
+                            if not res["has_adult_content"]:
+                                for item in resp_content[:50]:
+                                    name = normalize_text(item.get("name", ""))
+                                    if any(k in name for k in adult_keys):
+                                        res["has_adult_content"] = True
+                                        break
+                            
+                            # Busca por nome
+                            if search_name:
+                                s_norm = normalize_text(search_name)
                                 for item in resp_content:
-                                    if s_norm in normalize_text(item.get("name")):
-                                        s_id = item.get("series_id")
-                                        s_info = get_series_details(base, user, pwd, s_id)
-                                        res["search_matches"]["Séries"][item.get("name")] = s_info or "Disponível"
-                            else:
-                                matches = [i.get("name") for i in resp_content if s_norm in normalize_text(i.get("name"))]
-                                cat_name = "Canais" if key == "live" else "Filmes"
-                                res["search_matches"][cat_name].extend(matches)
-                except: continue
-    except: pass
+                                    item_name = item.get("name", "")
+                                    if s_norm in normalize_text(item_name):
+                                        if key == "series":
+                                            s_id = item.get("series_id")
+                                            s_info = get_series_details(base, user, pwd, s_id)
+                                            res["search_matches"]["Séries"][item_name] = s_info or "Disponível"
+                                        else:
+                                            cat_label = "Canais" if key == "live" else "Filmes"
+                                            res["search_matches"][cat_label].append(item_name)
+                    except: continue
+    except:
+        pass
+        
     return url_data, res
 
-# Interface
+# Interface Principal
 with st.form(key="m3u_form"):
-    m3u_message = st.text_area("Cole o texto contendo as URLs aqui", key="m3u_input_value", height=150)
-    search_query = st.text_input("🔍 Buscar conteúdo específico (opcional)", key="search_name")
+    m3u_message = st.text_area("Cole a URL ou lista M3U aqui", key="m3u_input_value", height=150, placeholder="http://servidor.com/get.php?username=user&password=pass&type=m3u_plus")
+    search_query = st.text_input("🔍 Buscar conteúdo (Ex: Globo, Batman)", key="search_name")
     
     c1, c2 = st.columns([1,1])
     with c1: submit = st.form_submit_button("🚀 Testar Agora")
@@ -192,9 +198,9 @@ with st.form(key="m3u_form"):
 if submit and m3u_message:
     parsed = parse_urls(m3u_message)
     if not parsed:
-        st.error("Nenhuma URL ou credencial válida encontrada no texto.")
+        st.error("Nenhuma URL válida com 'username' e 'password' foi detectada.")
     else:
-        with st.spinner(f"Analisando {len(parsed)} servidor(es)..."):
+        with st.spinner(f"Processando {len(parsed)} servidor(es)..."):
             with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = [executor.submit(get_xtream_info, url, search_query) for url in parsed]
                 for future in as_completed(futures):
@@ -212,30 +218,25 @@ if submit and m3u_message:
                             exp_date = info['exp_date']
                             color_date = "red" if "Falha" in exp_date else "green"
                             st.markdown(f"📅 **Expira:** <span style='color:{color_date}'>**{exp_date}**</span>", unsafe_allow_html=True)
-                            
-                            adult_status = "🔞 Sim" if info["has_adult_content"] else "🛡️ Não"
-                            st.write(f"🔞 **Adulto:** `{adult_status}`")
+                            st.write(f"🔞 **Adulto:** {'🔞 Sim' if info['has_adult_content'] else '🛡️ Não'}")
                             
                         with col_b:
                             st.write(f"📺 **Canais:** `{info['live_count']}`")
                             st.write(f"🎬 **Filmes:** `{info['vod_count']}`")
                             st.write(f"🍿 **Séries:** `{info['series_count']}`")
                             st.write(f"👥 **Conexões:** `{info['active_cons']}/{info['max_connections']}`")
-                            
-                            # Ajustado para Domínio TV e checando a URL limpa
-                            domain_status = "✅" if info['is_accepted_domain'] else "❌"
-                            st.write(f"📺 **Domínio TV:** {domain_status}")
+                            st.write(f"📺 **Domínio TV:** {'✅' if info['is_accepted_domain'] else '❌'}")
 
                         if search_query and any(info["search_matches"].values()):
-                            st.info(f"🔎 Resultados para '{search_query}':")
-                            for cat, matches in info["search_matches"].items():
-                                if matches:
-                                    st.write(f"**{cat}:**")
-                                    if isinstance(matches, dict):
-                                        for n, v in matches.items(): st.write(f"- {n} ({v})")
-                                    else:
-                                        for m in matches[:10]: st.write(f"- {m}")
-                                        if len(matches) > 10: st.write(f"... e mais {len(matches)-10}")
+                            with st.expander(f"🔎 Resultados para '{search_query}'"):
+                                for cat, matches in info["search_matches"].items():
+                                    if matches:
+                                        st.markdown(f"**{cat}**")
+                                        if isinstance(matches, dict):
+                                            for n, v in matches.items(): st.write(f"- {n} ({v})")
+                                        else:
+                                            for m in matches[:15]: st.write(f"- {m}")
+                                            if len(matches) > 15: st.write(f"... e mais {len(matches)-15}")
                     st.divider()
 
-st.info("Nota: Este script usa Headers de navegador e ignora erros SSL para garantir conexão com servidores antigos ou mal configurados.")
+st.caption("Nota: Otimizado para Xtream Codes API. Certificados SSL inválidos são ignorados automaticamente.")
