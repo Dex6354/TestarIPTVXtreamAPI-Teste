@@ -5,12 +5,13 @@ from urllib.parse import quote, urlparse, parse_qs
 from datetime import datetime
 import urllib3
 
-# Desabilitar avisos de segurança
+# Desabilitar avisos de segurança para certificados SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Xtream API - Fix 406 Final", layout="centered")
+# Configuração da Página
+st.set_page_config(page_title="IPTV Checker Pro", layout="centered")
 
-# Simulação profunda de um dispositivo Android (Smarters Pro oficial)
+# Headers que simulam um aplicativo real para tentar pular o Erro 406
 HEADERS = {
     "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 10; SM-G981B Build/QP1A.190711.020)",
     "Accept-Encoding": "gzip",
@@ -28,81 +29,70 @@ def parse_urls(message):
             user = params.get('username', [None])[0]
             pwd = params.get('password', [None])[0]
             if user and pwd:
-                # Extraímos a base e também criamos uma versão sem o "cdn."
                 netloc = p.netloc
                 base_original = f"{p.scheme}://{netloc}"
+                results.append({"base": base_original, "user": user, "pwd": pwd, "type": "Original"})
                 
-                alt_netloc = netloc.replace('cdn.', '')
-                base_alt = f"{p.scheme}://{alt_netloc}"
-                
-                results.append({"base": base_original, "user": user, "pwd": pwd})
-                if base_original != base_alt:
-                    results.append({"base": base_alt, "user": user, "pwd": pwd, "is_alt": True})
-        except: continue
+                # Rota alternativa removendo o "cdn." que causa erro 406
+                if 'cdn.' in netloc:
+                    alt_netloc = netloc.replace('cdn.', '')
+                    base_alt = f"{p.scheme}://{alt_netloc}"
+                    results.append({"base": base_alt, "user": user, "pwd": pwd, "type": "Sem CDN (Bypass)"})
+        except:
+            continue
     return results
 
 def test_server(data):
     base, user, pwd = data["base"], data["user"], data["pwd"]
-    # Forçamos o endpoint direto de autenticação
     api_url = f"{base}/player_api.php?username={quote(user)}&password={quote(pwd)}"
     
     try:
-        # Aumentamos o timeout para dar tempo do firewall processar
-        response = requests.get(api_url, headers=HEADERS, verify=False, timeout=12)
-        
+        response = requests.get(api_url, headers=HEADERS, verify=False, timeout=15)
         if response.status_code == 200:
             try:
                 json_data = response.json()
                 if "user_info" in json_data:
-                    return {"success": True, "data": json_data}
+                    return {"success": True, "data": json_data, "code": 200}
             except:
                 pass
-        return {"success": False, "status": response.status_code}
+        return {"success": False, "code": response.status_code}
     except Exception as e:
-        return {"success": False, "status": str(e)}
+        return {"success": False, "code": str(e)}
 
-# --- Interface ---
-st.title("🔌 Desbloqueio de Conexão IPTV")
+# Interface Streamlit
+st.title("🔌 IPTV Xtream Validator")
 
-url_input = st.text_area("Insira sua URL completa:", "http://cdn.club8.ca/get.php?username=concmus03&password=3a3b3c3d&type=m3u_plus")
+m3u_input = st.text_area("Cole sua URL M3U:", value="http://cdn.club8.ca/get.php?username=concmus03&password=3a3b3c3d&type=m3u_plus", height=100)
 
-if st.button("🚀 Forçar Acesso"):
-    links = parse_urls(url_input)
+if st.button("🚀 Testar Conexão"):
+    links = parse_urls(m3u_input)
     
     if not links:
-        st.error("Nenhuma URL detectada.")
+        st.error("Nenhuma credencial encontrada.")
     else:
         for link in links:
-            label = "🛡️ Original" if "is_alt" not in link else "🔓 Alternativa (Sem CDN)"
-            with st.spinner(f"Testando rota {label}: {link['base']}..."):
+            with st.spinner(f"Testando rota {link['type']}: {link['base']}..."):
                 res = test_server(link)
                 
                 if res["success"]:
                     ui = res["data"]["user_info"]
-                    st.balloons()
+                    st.success(f"✅ Conectado com sucesso via rota: {link['type']}")
                     with st.container(border=True):
-                        st.success(f"✅ Sucesso via: {link['base']}")
-                        st.write(f"👤 **Usuário:** `{link['user']}`")
-                        exp = ui.get("exp_date")
-                        date = datetime.fromtimestamp(int(exp)).strftime('%d/%m/%Y') if (exp and int(exp) != 0) else "Ilimitado"
-                        st.write(f"📅 **Vencimento:** `{date}`")
-                        st.write(f"👥 **Conexões:** `{ui.get('active_cons')}/{ui.get('max_connections')}`")
-                    break # Para de testar se um funcionar
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"👤 **Usuário:** `{link['user']}`")
+                            exp = ui.get("exp_date")
+                            if exp and exp != "null":
+                                dt = datetime.fromtimestamp(int(exp)).strftime('%d/%m/%Y')
+                                st.write(f"📅 **Expira:** `{dt}`")
+                            else:
+                                st.write(f"📅 **Expira:** `Ilimitado`")
+                        with col2:
+                            st.write(f"👥 **Conexões:** `{ui.get('active_cons')}/{ui.get('max_connections')}`")
+                            st.write(f"📡 **Status:** `{ui.get('status')}`")
+                    st.balloons()
+                    break 
                 else:
-                    if "is_alt" in link:
-                        st.error(f"❌ Rota {label} falhou (Erro {res['status']})")
+                    st.warning(f"❌ Rota {link['type']} falhou. Erro: {res['code']}")
 
-### 🛠️ Por que este é o último recurso?
-
-O diagrama abaixo ilustra como o firewall do servidor IPTV interpreta sua requisição:
-
-
-
-### Se ainda assim der 406:
-Isso prova que o servidor `club8.ca` está configurado para **rejeitar qualquer IP que pertença a Data Centers** (como Google, Amazon, Microsoft ou onde o Streamlit estiver hospedado).
-
-**O que fazer agora?**
-1. **Teste em 4G/5G:** Abra o seu app no celular usando os dados móveis. Se funcionar no celular e não no script, o bloqueio é no IP do servidor do script.
-2. **Execute Localmente:** Instale o Python no seu PC, salve o código e rode `pip install streamlit requests` e depois `streamlit run seu_arquivo.py`. **No seu IP residencial, o erro 406 dificilmente acontecerá.**
-
-Gostaria que eu adaptasse o código para gerar um **arquivo .py pronto para você baixar** e rodar no seu computador?
+st.info("Nota: Se todas as rotas falharem com erro 406 no Streamlit, execute este código no seu computador local.")
