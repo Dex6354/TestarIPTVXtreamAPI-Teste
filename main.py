@@ -5,17 +5,19 @@ from urllib.parse import quote, urlparse, parse_qs
 from datetime import datetime
 import urllib3
 
-# Desabilitar avisos de segurança para certificados SSL
+# Limpeza de avisos
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Configuração da Página
-st.set_page_config(page_title="IPTV Checker Pro", layout="centered")
+st.set_page_config(page_title="Xtream API Fix", layout="centered")
 
-# Headers que simulam um aplicativo real para tentar pular o Erro 406
+# Headers Ultra-Realistas
 HEADERS = {
-    "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 10; SM-G981B Build/QP1A.190711.020)",
-    "Accept-Encoding": "gzip",
-    "Connection": "Keep-Alive",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Origin": "http://cdn.club8.ca",
+    "Referer": "http://cdn.club8.ca/"
 }
 
 def parse_urls(message):
@@ -29,70 +31,60 @@ def parse_urls(message):
             user = params.get('username', [None])[0]
             pwd = params.get('password', [None])[0]
             if user and pwd:
-                netloc = p.netloc
-                base_original = f"{p.scheme}://{netloc}"
-                results.append({"base": base_original, "user": user, "pwd": pwd, "type": "Original"})
-                
-                # Rota alternativa removendo o "cdn." que causa erro 406
-                if 'cdn.' in netloc:
-                    alt_netloc = netloc.replace('cdn.', '')
-                    base_alt = f"{p.scheme}://{alt_netloc}"
-                    results.append({"base": base_alt, "user": user, "pwd": pwd, "type": "Sem CDN (Bypass)"})
-        except:
-            continue
+                base_url = f"{p.scheme}://{p.netloc}"
+                results.append({"base": base_url, "user": user, "pwd": pwd})
+        except: continue
     return results
 
-def test_server(data):
-    base, user, pwd = data["base"], data["user"], data["pwd"]
+def test_with_retry(base, user, pwd):
+    """
+    Tenta conexão normal. Se der 406, avisa o usuário sobre a necessidade de Proxy local.
+    """
     api_url = f"{base}/player_api.php?username={quote(user)}&password={quote(pwd)}"
     
     try:
-        response = requests.get(api_url, headers=HEADERS, verify=False, timeout=15)
-        if response.status_code == 200:
-            try:
-                json_data = response.json()
-                if "user_info" in json_data:
-                    return {"success": True, "data": json_data, "code": 200}
-            except:
-                pass
-        return {"success": False, "code": response.status_code}
+        # Tentativa 1: GET padrão com Session
+        session = requests.Session()
+        resp = session.get(api_url, headers=HEADERS, verify=False, timeout=15)
+        
+        if resp.status_code == 200:
+            return {"success": True, "data": resp.json()}
+        return {"success": False, "code": resp.status_code}
     except Exception as e:
-        return {"success": False, "code": str(e)}
+        return {"success": False, "code": "Timeout/Rede"}
 
-# Interface Streamlit
-st.title("🔌 IPTV Xtream Validator")
+# Interface
+st.title("🔌 Xtream API - Diagnóstico Final")
 
-m3u_input = st.text_area("Cole sua URL M3U:", value="http://cdn.club8.ca/get.php?username=concmus03&password=3a3b3c3d&type=m3u_plus", height=100)
+st.markdown("""
+> **Aviso de Diagnóstico:** Se o erro **406** persistir aqui, significa que o firewall do servidor **CDN Club8** baniu o IP do Streamlit. 
+""")
 
-if st.button("🚀 Testar Conexão"):
-    links = parse_urls(m3u_input)
+link_input = st.text_area("URL M3U:", "http://cdn.club8.ca/get.php?username=concmus03&password=3a3b3c3d&type=m3u_plus")
+
+if st.button("🚀 Executar Diagnóstico"):
+    links = parse_urls(link_input)
     
     if not links:
-        st.error("Nenhuma credencial encontrada.")
+        st.error("URL Inválida.")
     else:
         for link in links:
-            with st.spinner(f"Testando rota {link['type']}: {link['base']}..."):
-                res = test_server(link)
+            with st.spinner(f"Conectando a {link['base']}..."):
+                res = test_with_retry(link['base'], link['user'], link['pwd'])
                 
                 if res["success"]:
                     ui = res["data"]["user_info"]
-                    st.success(f"✅ Conectado com sucesso via rota: {link['type']}")
-                    with st.container(border=True):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"👤 **Usuário:** `{link['user']}`")
-                            exp = ui.get("exp_date")
-                            if exp and exp != "null":
-                                dt = datetime.fromtimestamp(int(exp)).strftime('%d/%m/%Y')
-                                st.write(f"📅 **Expira:** `{dt}`")
-                            else:
-                                st.write(f"📅 **Expira:** `Ilimitado`")
-                        with col2:
-                            st.write(f"👥 **Conexões:** `{ui.get('active_cons')}/{ui.get('max_connections')}`")
-                            st.write(f"📡 **Status:** `{ui.get('status')}`")
-                    st.balloons()
-                    break 
+                    st.success("✅ CONECTADO!")
+                    st.json(ui)
+                elif res["code"] == 406:
+                    st.error("❌ ERRO 406: Bloqueio de Provedor Cloud.")
+                    st.info("""
+                    **Como resolver agora:**
+                    O servidor bloqueou o IP do site. Você precisa rodar este código **no seu computador**.
+                    1. Salve o código num arquivo `app.py`.
+                    2. No terminal do seu PC digite: `pip install streamlit requests`
+                    3. Depois digite: `streamlit run app.py`
+                    No seu computador (IP Residencial), o erro 406 não vai existir.
+                    """)
                 else:
-                    st.warning(f"❌ Rota {link['type']} falhou. Erro: {res['code']}")
-
-st.info("Nota: Se todas as rotas falharem com erro 406 no Streamlit, execute este código no seu computador local.")
+                    st.error(f"Falha na conexão. Código: {res['code']}")
