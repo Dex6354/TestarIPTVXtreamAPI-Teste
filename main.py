@@ -242,5 +242,3 @@ if submit and m3u_message:
                                         for m in matches[:10]: st.write(f"- {m}")
                                         if len(matches) > 10: st.write(f"... e mais {len(matches)-10}")
                     st.divider()
-
-st.info("Nota: Este script usa Headers de navegador e ignora erros SSL para garantir conexão com servidores antigos ou mal configurados.")
