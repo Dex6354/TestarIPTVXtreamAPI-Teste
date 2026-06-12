@@ -8,13 +8,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import unicodedata
 import urllib3
 
-# Desabilitar avisos de segurança para certificados SSL inválidos
+# Desabilitar avisos de segurança para certificados SSL inválidos (comum em IPTV)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configuração da página do Streamlit
 st.set_page_config(page_title="Testar Xtream API", layout="centered")
 
-# Cabeçalhos para simular um navegador
+# Cabeçalhos para simular um navegador (Evita bloqueio do servidor)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "*/*",
@@ -34,7 +34,7 @@ st.markdown("""
     <h5 style='margin-bottom: 0.1rem;'>🔌 Testar Xtream API</h5>
     <p style='margin-top: 0.1rem;'>
         ✅ <strong>Domínios aceitos no Smarters Pro:</strong> <code>.ca</code>, <code>.io</code>, <code>.cc</code>, <code>.me</code>, <code>.top</code>, <code>.space</code>, <code>.in</code>.<br>
-        ❌ <strong>Domínios não aceitos:</strong> <code>.site</code>, <code>.com</code>, <code>.lat</code>, <code>.live</code>, <code>.icu</code>, <code>.xyz</code>, <code>.online</code> e portas diferentes de 80/443.
+        ❌ <strong>Domínios não aceitos:</strong> <code>.site</code>, <code>.com</code>, <code>.lat</code>, <code>.live</code>, <code>.icu</code>, <code>.xyz</code>, <code>.online</code>.
     </p>
 """, unsafe_allow_html=True)
 
@@ -53,8 +53,8 @@ def normalize_text(text):
     return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8')
 
 def parse_urls(message):
-    # Regex corrigido para aceitar caracteres especiais e url-encoded nos usuários/senhas
-    m3u_pattern = r"(https?://[^\s\"']+(?:get\.php|player_api\.php)\?username=([^&\s\"']+)\&password=([^&\s\"']+))"
+    # Regex atualizado para capturar caracteres especiais em usuários e senhas (ex: %40)
+    m3u_pattern = r"(https?://[^\s\"']+(?:get\.php|player_api\.php)\?username=([^\s&\"']+)&password=([^\s&\"']+))"
     found = re.findall(m3u_pattern, message)
     parsed_urls = []
     unique_ids = set()
@@ -66,8 +66,9 @@ def parse_urls(message):
             base_full = base_match.group(1)
             if base_full.endswith('/'): base_full = base_full[:-1]
             
+            # Extrai apenas o hostname (ex: pro123.ddns.me)
             parsed_url = urlparse(base_full)
-            base_display = f"{parsed_url.scheme}://{parsed_url.hostname if parsed_url.hostname else ''}"
+            base_display = f"{parsed_url.scheme}://{parsed_url.hostname}"
             
             identifier = (base_full, user, pwd)
             if identifier not in unique_ids:
@@ -95,6 +96,7 @@ def get_series_details(base_url, username, password, series_id):
 
 def get_xtream_info(url_data, search_name=None):
     base, user, pwd = url_data["base"], url_data["username"], url_data["password"]
+    display_base = url_data["display_base"]
     u_enc, p_enc = quote(user), quote(pwd)
     api_url = f"{base}/player_api.php?username={u_enc}&password={p_enc}"
     
@@ -102,52 +104,19 @@ def get_xtream_info(url_data, search_name=None):
         "is_json": False, "real_server": base, "exp_date": "Falha no login",
         "active_cons": "N/A", "max_connections": "N/A", "has_adult_content": False,
         "is_accepted_domain": False, "live_count": 0, "vod_count": 0, "series_count": 0,
-        "search_matches": {"Canais": [], "Filmes": [], "Séries": {}},
-        "motivo_erro": ""
+        "search_matches": {"Canais": [], "Filmes": [], "Séries": {}}
     }
 
     adult_keys = ["adult", "xxx", "+18", "sex", "porn", "adulto"]
-    valid_tlds = ('.ca', '.io', '.cc', '.me', '.in', '.top', '.space')
-    blocked_keywords = ('site', 'com', 'lat', 'live', 'icu', 'xyz', 'online')
 
     try:
-        # 1. Faz a requisição seguindo redirecionamentos para capturar o SERVIDOR REAL
-        main_resp = requests.get(api_url, headers=HEADERS, verify=False, timeout=12, allow_redirects=True)
-        
-        # 2. Extrai dados do Servidor Real
-        real_url = main_resp.url
-        parsed_real = urlparse(real_url)
-        real_hostname = parsed_real.hostname.lower() if parsed_real.hostname else ""
-        real_port = parsed_real.port
-        
-        res["real_server"] = f"{parsed_real.scheme}://{real_hostname}" + (f":{real_port}" if real_port else "")
-
-        # 3. Validação de Porta (Bloqueia se tiver porta explícita diferente de 80 e 443)
-        if real_port and real_port not in (80, 443):
-            res["motivo_erro"] = f"Porta Proibida ({real_port})"
-            return url_data, res
-
-        # 4. Validação de Termos/Keywords Proibidas
-        if any(kw in real_hostname for kw in blocked_keywords):
-            res["motivo_erro"] = "Domínio Proibido/Filtro"
-            return url_data, res
-
-        # 5. Validação de Extensões Permitidas
-        if not any(real_hostname.endswith(tld) or f"{tld}." in real_hostname for tld in valid_tlds):
-            res["motivo_erro"] = "Extensão não aceita"
-            return url_data, res
-            
-        res["is_accepted_domain"] = True
-
-        # 6. Validação do JSON
+        main_resp = requests.get(api_url, headers=HEADERS, verify=False, timeout=15)
         try:
             data_json = main_resp.json()
         except:
-            res["motivo_erro"] = "Resposta não é JSON"
             return url_data, res
 
         if "user_info" not in data_json: 
-            res["motivo_erro"] = "Retorno sem user_info"
             return url_data, res
         
         res["is_json"] = True
@@ -159,14 +128,18 @@ def get_xtream_info(url_data, search_name=None):
             else:
                 res["exp_date"] = "Nunca expira" if int(exp) > time.time() * 200 else datetime.fromtimestamp(int(exp)).strftime('%d/%m/%Y')
         else:
-             res["exp_date"] = "Indefinido"
+            res["exp_date"] = "Indefinido"
         
         res["active_cons"] = user_info.get("active_cons", "0")
         res["max_connections"] = user_info.get("max_connections", "0")
         
-        # Testar categorias adultas
+        # Lógica de validação do domínio baseada no display_base (sem porta)
+        valid_tlds = ('.ca', '.io', '.cc', '.me', '.in', '.top', '.space')
+        clean_domain = display_base.lower()
+        res["is_accepted_domain"] = any(clean_domain.endswith(tld) for tld in valid_tlds)
+
         try:
-            cat_resp = requests.get(f"{base}/player_api.php?username={u_enc}&password={p_enc}&action=get_live_categories", headers=HEADERS, verify=False, timeout=8).json()
+            cat_resp = requests.get(f"{api_url}&action=get_live_categories", headers=HEADERS, verify=False, timeout=10).json()
             if isinstance(cat_resp, list):
                 for cat in cat_resp:
                     cat_name = normalize_text(cat.get("category_name", ""))
@@ -175,11 +148,10 @@ def get_xtream_info(url_data, search_name=None):
                         break
         except: pass
 
-        # Requisições paralelas para contagem e busca
         actions = {"live": "get_live_streams", "vod": "get_vod_streams", "series": "get_series"}
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_key = {
-                executor.submit(requests.get, f"{base}/player_api.php?username={u_enc}&password={p_enc}&action={act}", headers=HEADERS, verify=False, timeout=15): key 
+                executor.submit(requests.get, f"{api_url}&action={act}", headers=HEADERS, verify=False, timeout=20): key 
                 for key, act in actions.items()
             }
             for future in as_completed(future_to_key):
@@ -206,9 +178,7 @@ def get_xtream_info(url_data, search_name=None):
                                 cat_name = "Canais" if key == "live" else "Filmes"
                                 res["search_matches"][cat_name].extend(matches)
                 except: continue
-    except:
-        res["motivo_erro"] = "Servidor Offline/Timeout"
-        
+    except: pass
     return url_data, res
 
 # Interface
@@ -231,22 +201,18 @@ if submit and m3u_message:
                 for future in as_completed(futures):
                     orig, info = future.result()
                     
-                    # Válido apenas se for JSON E passar nos filtros de domínio/porta
-                    status_valido = info["is_json"] and info["is_accepted_domain"]
-                    status_icon = "✅" if status_valido else "❌"
+                    status_icon = "✅" if info["is_json"] else "❌"
                     
                     with st.container(border=True):
                         col_a, col_b = st.columns(2)
                         with col_a:
-                            st.write(f"{status_icon} **Servidor Original:** `{orig['display_base']}`")
-                            if info["real_server"] != orig["base"]:
-                                st.write(f"🔄 **Servidor Real:** `{info['real_server']}`")
+                            st.write(f"{status_icon} **Servidor:** `{orig['display_base']}`")
                             st.write(f"👤 **Usuário:** `{orig['username']}`")
                             st.write(f"🔑 **Senha:** `{orig['password']}`")
                             
-                            exp_date = info['exp_date'] if status_valido else info["motivo_erro"]
-                            color_date = "green" if status_valido else "red"
-                            st.markdown(f"📅 **Status/Expira:** <span style='color:{color_date}'>**{exp_date}**</span>", unsafe_allow_html=True)
+                            exp_date = info['exp_date']
+                            color_date = "red" if "Falha" in exp_date else "green"
+                            st.markdown(f"📅 **Expira:** <span style='color:{color_date}'>**{exp_date}**</span>", unsafe_allow_html=True)
                             
                             adult_status = "🔞 Sim" if info["has_adult_content"] else "🛡️ Não"
                             st.write(f"🔞 **Adulto:** `{adult_status}`")
@@ -257,10 +223,18 @@ if submit and m3u_message:
                             st.write(f"🍿 **Séries:** `{info['series_count']}`")
                             st.write(f"👥 **Conexões:** `{info['active_cons']}/{info['max_connections']}`")
                             
-                            domain_status = "✅" if info['is_accepted_domain'] else f"❌ ({info['motivo_erro']})"
-                            st.write(f"⚖️ **Filtro Regras:** {domain_status}")
+                            domain_status = "✅" if info['is_accepted_domain'] else "❌"
+                            st.write(f"📺 **Domínio TV:** {domain_status}")
+                        
+                        # Geração e exibição dos links formatados M3U e JSON
+                        st.markdown("🔗 **Links Gerados:**")
+                        m3u_generated = f"{orig['base']}/get.php?username={orig['username']}&password={orig['password']}&type=m3u_plus"
+                        json_generated = f"{orig['base']}/player_api.php?username={orig['username']}&password={orig['password']}"
+                        
+                        st.code(m3u_generated, language="text")
+                        st.code(json_generated, language="text")
 
-                        if search_query and any(info["search_matches"].values()) and status_valido:
+                        if search_query and any(info["search_matches"].values()):
                             st.info(f"🔎 Resultados para '{search_query}':")
                             for cat, matches in info["search_matches"].items():
                                 if matches:
@@ -272,4 +246,4 @@ if submit and m3u_message:
                                         if len(matches) > 10: st.write(f"... e mais {len(matches)-10}")
                     st.divider()
 
-st.info("Nota: Este script identifica automaticamente redirecionamentos ocultos para aplicar os filtros no servidor real final.")
+st.info("Nota: Este script usa Headers de navegador e ignora erros SSL para garantir conexão com servidores antigos ou mal configurados.")
