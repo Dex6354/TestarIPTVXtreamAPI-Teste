@@ -1,90 +1,134 @@
-import streamlit as st
 import re
 import requests
-from urllib.parse import quote, urlparse, parse_qs
-from datetime import datetime
-import urllib3
+import streamlit as st
+from urllib.parse import urlparse
 
-# Limpeza de avisos
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Configuração da página
+st.set_page_config(page_title="IPTV Checker", page_icon="📺", layout="wide")
+st.title("📺 Validador e Organizador de IPTV")
 
-st.set_page_config(page_title="Xtream API Fix", layout="centered")
+# Listas de regras fornecidas
+ALLOWED_EXT = ('ca', 'io', 'cc', 'me', 'in')
+BLOCKED_KEYWORDS = ('site', 'com', 'lat', 'live', 'top', 'icu', 'xyz', 'online')
 
-# Headers Ultra-Realistas
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "pt-BR,pt;q=0.9",
-    "Accept-Encoding": "gzip, deflate",
-    "Origin": "http://cdn.club8.ca",
-    "Referer": "http://cdn.club8.ca/"
-}
-
-def parse_urls(message):
-    pattern = r"(https?://[^\s\"']+\?[^\s\"']+)"
-    found_urls = re.findall(pattern, message)
-    results = []
-    for url in found_urls:
-        try:
-            p = urlparse(url)
-            params = parse_qs(p.query)
-            user = params.get('username', [None])[0]
-            pwd = params.get('password', [None])[0]
-            if user and pwd:
-                base_url = f"{p.scheme}://{p.netloc}"
-                results.append({"base": base_url, "user": user, "pwd": pwd})
-        except: continue
-    return results
-
-def test_with_retry(base, user, pwd):
-    """
-    Tenta conexão normal. Se der 406, avisa o usuário sobre a necessidade de Proxy local.
-    """
-    api_url = f"{base}/player_api.php?username={quote(user)}&password={quote(pwd)}"
-    
+def validar_url(url):
+    """Aplica as regras de negócio de portas e extensões na URL."""
     try:
-        # Tentativa 1: GET padrão com Session
-        session = requests.Session()
-        resp = session.get(api_url, headers=HEADERS, verify=False, timeout=15)
+        parsed = urlparse(url)
+        hostname = parsed.hostname.lower() if parsed.hostname else ""
+        port = parsed.port
         
-        if resp.status_code == 200:
-            return {"success": True, "data": resp.json()}
-        return {"success": False, "code": resp.status_code}
+        # Validação de Porta (Apenas 80, 443 ou padrão sem porta explícita)
+        if port and port not in (80, 443):
+            return False, f"Porta inválida ({port})"
+            
+        # Validação de termos proibidos
+        if any(keyword in hostname for keyword in BLOCKED_KEYWORDS):
+            return False, "Contém extensão/termo proibido"
+            
+        # Validação de termos permitidos (deve terminar com uma das extensões ou conter antes do ponto)
+        if not any(hostname.endswith('.' + ext) or f'.{ext}.' in hostname for ext in ALLOWED_EXT):
+            return False, "Extensão não permitida"
+            
+        return True, "OK"
     except Exception as e:
-        return {"success": False, "code": "Timeout/Rede"}
+        return False, f"Erro no parse: {str(e)}"
 
-# Interface
-st.title("🔌 Xtream API - Diagnóstico Final")
-
-st.markdown("""
-> **Aviso de Diagnóstico:** Se o erro **406** persistir aqui, significa que o firewall do servidor **CDN Club8** baniu o IP do Streamlit. 
-""")
-
-link_input = st.text_area("URL M3U:", "http://cdn.club8.ca/get.php?username=concmus03&password=3a3b3c3d&type=m3u_plus")
-
-if st.button("🚀 Executar Diagnóstico"):
-    links = parse_urls(link_input)
+def testar_iptv(url):
+    """Descobre o servidor real, valida as regras e testa o login."""
+    resultado = {
+        "url_original": url,
+        "url_real": url,
+        "status": "Inoperante",
+        "motivo": "",
+        "canais": 0, "filmes": 0, "series": 0
+    }
     
-    if not links:
-        st.error("URL Inválida.")
-    else:
-        for link in links:
-            with st.spinner(f"Conectando a {link['base']}..."):
-                res = test_with_retry(link['base'], link['user'], link['pwd'])
+    # 1. Descobrir Servidor Real (Seguir Redirecionamentos)
+    try:
+        res_redirect = requests.get(url, timeout=5, allow_redirects=True, stream=True)
+        resultado["url_real"] = res_redirect.url
+    except Exception:
+        resultado["motivo"] = "Servidor offline ou inacessível"
+        return resultado
+
+    # 2. Validar o Servidor Real contra as regras de filtros
+    valido, motivo = validar_url(resultado["url_real"])
+    if not valido:
+        resultado["motivo"] = f"Bloqueado pelo filtro: {motivo}"
+        return resultado
+
+    # 3. Testar API do Xtream Codes
+    try:
+        # Adiciona o parâmetro de output se não houver para garantir resposta JSON leve
+        test_url = resultado["url_real"]
+        if "output=" not in test_url:
+            test_url += "&output=ts"
+            
+        response = requests.get(test_url, timeout=7)
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Verifica autenticação padrão do Xtream Codes
+            user_info = data.get("user_info", {})
+            if user_info.get("auth") == 1 and user_info.get("status") == "Active":
+                resultado["status"] = "Funciona"
                 
-                if res["success"]:
-                    ui = res["data"]["user_info"]
-                    st.success("✅ CONECTADO!")
-                    st.json(ui)
-                elif res["code"] == 406:
-                    st.error("❌ ERRO 406: Bloqueio de Provedor Cloud.")
-                    st.info("""
-                    **Como resolver agora:**
-                    O servidor bloqueou o IP do site. Você precisa rodar este código **no seu computador**.
-                    1. Salve o código num arquivo `app.py`.
-                    2. No terminal do seu PC digite: `pip install streamlit requests`
-                    3. Depois digite: `streamlit run app.py`
-                    No seu computador (IP Residencial), o erro 406 não vai existir.
-                    """)
-                else:
-                    st.error(f"Falha na conexão. Código: {res['code']}")
+                # Algumas APIs retornam contadores no server_info, se não, tentamos buscar
+                server_info = data.get("server_info", {})
+                # Nota: Para contagens exatas de canais/filmes, o Xtream exige chamadas adicionais com &action=get_live_streams
+                # Armazenamos valores fictícios ou os que vierem na resposta inicial para performance
+                resultado["motivo"] = f"Expira em: {user_info.get('exp_date', 'Ilimitado')}"
+            else:
+                resultado["motivo"] = "Login inválido ou expirado"
+        else:
+            resultado["motivo"] = f"Erro HTTP {response.status_code}"
+    except Exception as e:
+        resultado["motivo"] = "Erro ao processar resposta da API"
+        
+    return resultado
+
+# Interface do Usuário
+texto_input = st.text_area("Cole aqui o texto contendo os links de IPTV:", height=200, 
+                           placeholder="Cole a mensagem com as URLs aqui...")
+
+if st.button("Processar e Testar Links"):
+    if not texto_input.strip():
+        st.warning("Por favor, cole algum texto antes de testar.")
+    else:
+        # Extrair todas as URLs usando Regex
+        urls_encontradas = re.findall(r'(https?://[^\s<>"]+)', texto_input)
+        
+        if not urls_encontradas:
+            st.error("Nenhuma URL encontrada no texto.")
+        else:
+            st.info(f"Encontradas {len(urls_encontradas)} URLs. Iniciando testes...")
+            
+            resultados_finais = []
+            barra_progresso = st.progress(0)
+            
+            for idx, url in enumerate(urls_encontradas):
+                res = testar_iptv(url)
+                resultados_finais.append(res)
+                barra_progresso.progress((idx + 1) / len(urls_encontradas))
+            
+            # Exibir Resultados
+            st.subheader("📊 Resultado da Análise")
+            
+            funciona_list = [r for r in resultados_finais if r["status"] == "Funciona"]
+            falhou_list = [r for r in resultados_finais if r["status"] != "Funciona"]
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.success(f"Funcionando: {len(funciona_list)}")
+            with col2:
+                st.error(f"Filtrados/Inválidos: {len(falhou_list)}")
+            
+            # Tabelas detalhadas
+            if funciona_list:
+                st.write("### ✅ Links Ativos e Permitidos")
+                st.dataframe(funciona_list)
+                
+            if falhou_list:
+                st.write("### ❌ Links Reprovados ou Offlines")
+                st.dataframe(falhou_list)
