@@ -210,7 +210,7 @@ if submit and m3u_message:
             exp_date = info['exp_date']
             
             # Título do expander simulando a linha da tabela
-            row_title = f"{status_icon} | Usuário: {orig['username']} | Servidor: {orig['display_base']} | Expira: {exp_date}"
+            row_title = f"{status_icon} Servidor: {orig['display_base']} | Usuário: {orig['username']}"
             
             with st.expander(row_title):
                 col_a, col_b = st.columns(2)
