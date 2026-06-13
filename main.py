@@ -60,7 +60,6 @@ def parse_urls(message):
 
     for item in found:
         full_url, user, pwd = item
-        # Decodifica para evitar dupla codificação posterior (ex: %40 virando %2540)
         user = unquote(user)
         pwd = unquote(pwd)
         
@@ -187,9 +186,12 @@ with st.form(key="m3u_form"):
     m3u_message = st.text_area("Cole o texto contendo as URLs aqui", key="m3u_input_value", height=150)
     search_query = st.text_input("🔍 Buscar conteúdo específico (opcional)", key="search_name")
     
-    c1, c2 = st.columns([1,1])
-    with c1: submit = st.form_submit_button("🚀 Testar Agora")
-    with c2: clear = st.form_submit_button("🧹 Limpar", on_click=clear_input)
+    # Colunas lado a lado para os botões
+    c1, c2 = st.columns([1, 1])
+    with c1: 
+        submit = st.form_submit_button("🚀 Testar Agora", use_container_width=True)
+    with c2: 
+        clear = st.form_submit_button("🧹 Limpar", on_click=clear_input, use_container_width=True)
 
 if submit and m3u_message:
     parsed = parse_urls(m3u_message)
@@ -203,17 +205,14 @@ if submit and m3u_message:
                 for future in as_completed(futures):
                     all_results.append(future.result())
         
-        # Ordena os resultados: is_json=True (OK) primeiro, depois is_json=False (Erro)
         all_results.sort(key=lambda x: x[1]["is_json"], reverse=True)
         
         st.write("### 📋 Resultados dos Usuários")
         
-        # Renderização em formato de linhas expansíveis
         for orig, info in all_results:
             status_icon = "✅" if info["is_json"] else "❌"
             exp_date = info['exp_date']
             
-            # Título do expander simulando a linha da tabela
             row_title = f"{status_icon} {orig['display_base']} | {orig['username']}"
             
             with st.expander(row_title):
@@ -238,14 +237,12 @@ if submit and m3u_message:
                     domain_status = "✅" if info['is_accepted_domain'] else "❌"
                     st.write(f"📺 **Domínio TV:** {domain_status}")
                 
-                # Links gerados
                 m3u_generated = f"{orig['base']}/get.php?username={quote(orig['username'])}&password={quote(orig['password'])}&type=m3u_plus"
                 json_generated = f"{orig['base']}/player_api.php?username={quote(orig['username'])}&password={quote(orig['password'])}"
                 
                 st.markdown(f"📥 **M3U:** [{m3u_generated}]({m3u_generated})")
                 st.markdown(f"🌐 **JSON:** [{json_generated}]({json_generated})")
 
-                # Resultados da busca dentro do expander correspondente
                 if search_query and any(info["search_matches"].values()):
                     st.info(f"🔎 Resultados para '{search_query}':")
                     for cat, matches in info["search_matches"].items():
