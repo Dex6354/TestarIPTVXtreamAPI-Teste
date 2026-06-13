@@ -21,12 +21,25 @@ HEADERS = {
     "Connection": "keep-alive"
 }
 
-# Estilos CSS (Inclui quebra de linha automática para links longos)
+# Estilos CSS (Inclui quebra de linha automática e força botões lado a lado em qualquer tela)
 st.markdown("""
     <style>
         .block-container { padding-top: 2.5rem; }
         .stCodeBlock, code { white-space: pre-wrap !important; word-break: break-all !important; }
         a { word-break: break-all !important; }
+        
+        /* Força as colunas do formulário a ficarem estritamente lado a lado (mesmo no celular) */
+        div[data-testid="stForm"] div[data-testid="stHorizontalBlock"] {
+            flex-direction: row !important;
+            display: flex !important;
+            width: 100% !important;
+            gap: 10px !important;
+        }
+        div[data-testid="stForm"] div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+            width: 50% !important;
+            flex: 1 1 auto !important;
+            min-width: 0 !important;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -186,7 +199,7 @@ with st.form(key="m3u_form"):
     m3u_message = st.text_area("Cole o texto contendo as URLs aqui", key="m3u_input_value", height=150)
     search_query = st.text_input("🔍 Buscar conteúdo específico (opcional)", key="search_name")
     
-    # Colunas lado a lado para os botões
+    # Linha com os botões lado a lado
     c1, c2 = st.columns([1, 1])
     with c1: 
         submit = st.form_submit_button("🚀 Testar Agora", use_container_width=True)
